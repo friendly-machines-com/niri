@@ -15,8 +15,9 @@ use std::time::Duration;
 
 use niri_config::{Color, Config, CornerRadius, GradientInterpolation};
 use niri_ipc::SizeChange;
+use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::{Element as _, Kind};
-use smithay::utils::{Physical, Point, Rectangle, Scale, Size};
+use smithay::utils::{Physical, Point, Rectangle, Scale, Size, Transform};
 use wayland_client::protocol::wl_surface::WlSurface;
 
 use super::client::ClientId;
@@ -267,7 +268,168 @@ fn scene_with_effects_draws_gles() {
     assert!(drawn.contains(&"postprocess_and_clip"), "drawn: {drawn:?}");
 }
 
-/// Renders the window opening animation, with and without a custom shader.
+/// A tabbed column renders the window title inside the tab indicator.
+#[test]
+fn scene_tab_titles_draw_gles() {
+    let config = Config::parse_mem(
+        r##"
+        layout {
+            background-color "#000000"
+            tab-indicator {
+                place-within-column
+                position "top"
+                width 18
+                gap 2
+                length total-proportion=1.0
+                gaps-between-tabs 2
+            }
+        }
+        window-rule {
+            default-column-display "tabbed"
+        }
+    "##,
+    )
+    .unwrap();
+    let Some(mut f) = set_up(config) else {
+        return;
+    };
+
+    // One window with a title, mapped like add_window() but with the title set
+    // before the first commit.
+    let id = f.add_client();
+    let window = f.client(id).create_window();
+    let surface = window.surface.clone();
+    window.set_title("foot");
+    window.commit();
+    f.roundtrip(id);
+
+    let window = f.client(id).window(&surface);
+    let (w, h) = window.configures_received.last().unwrap().1.size;
+    window.attach_new_shm_buffer(w as u16, h as u16);
+    window.set_size(w as u16, h as u16);
+    window.ack_last_and_commit();
+    f.double_roundtrip(id);
+    set_time(&mut f, Duration::ZERO);
+    settle(&mut f);
+
+    let audit = render_scene(&mut f, None);
+    audit.assert_drew(&[ProgramType::Border]);
+
+    // Render the full scene into pixels and look for the white title text in the
+    // top strip where the tab indicator is. Background is black, the bar is blue,
+    // so near-white pixels there can only be the title glyphs.
+    let output = f.niri_output(1);
+    let size = output.current_mode().unwrap().size;
+    let state = f.niri_state();
+    let pixels = {
+        let renderer = state.backend.headless().renderer().unwrap();
+        blend::set_frame_blend(renderer, None);
+        let ctx = RenderCtx {
+            renderer,
+            target: RenderTarget::Output,
+            xray: None,
+        };
+        let elements = state.niri.render_to_vec(ctx, &output, false);
+        let renderer = state.backend.headless().renderer().unwrap();
+        crate::render_helpers::render_to_vec(
+            renderer,
+            size,
+            Scale::from(1.),
+            Transform::Normal,
+            Fourcc::Abgr8888,
+            elements.iter().rev(),
+        )
+        .unwrap()
+    };
+
+    // The title is white text composited over the blue tab bar (127, 200, 255-ish,
+    // from the default focus-ring-derived gradient), so glyph pixels come out as
+    // light blue, not pure white. Count pixels in the strip that differ from both
+    // the black background and the bar color: those can only be the title glyphs.
+    let mut textish = 0;
+    for y in 0..24usize {
+        for x in 0..size.w as usize {
+            let i = (y * size.w as usize + x) * 4;
+            let (b, g, r) = (pixels[i], pixels[i + 1], pixels[i + 2]);
+            let bg = b < 40 && g < 40 && r < 40;
+            let bar = (b as i32 - 255).abs() <= 25
+                && (g as i32 - 200).abs() <= 25
+                && (r as i32 - 127).abs() <= 25;
+            if !bg && !bar && pixels[i + 3] != 0 {
+                textish += 1;
+            }
+        }
+    }
+    assert!(
+        textish >= 20,
+        "no title text drawn in the tab strip (textish pixels: {textish})"
+    );
+}
+
+/// Draws one title texture element alone, with no layout involved, to isolate the
+/// pango → cairo → texture → element → draw chain.
+#[test]
+fn tab_title_texture_draws_alone_gles() {
+    let config = Config::parse_mem(
+        r##"
+        layout {
+            background-color "#000000"
+        }
+    "##,
+    )
+    .unwrap();
+    let Some(mut f) = set_up(config) else {
+        return;
+    };
+    let _ = f.niri_output(1);
+
+    let state = f.niri_state();
+    let renderer = state.backend.headless().renderer().unwrap();
+    let tex = crate::ui::title_texture::generate_title_texture(
+        renderer,
+        "sans 11px",
+        (1., 1., 1.),
+        None,
+        "foot",
+        1.,
+    )
+    .unwrap();
+    let size = tex.logical_size().to_physical_precise_round(1.);
+    let elem = crate::render_helpers::texture::TextureRenderElement::from_texture_buffer(
+        tex,
+        Point::from((0., 0.)),
+        1.,
+        None,
+        None,
+        Kind::Unspecified,
+    );
+    let elem = crate::render_helpers::texture::UniversalTextureRenderElement(elem);
+    let pixels = crate::render_helpers::render_to_vec(
+        renderer,
+        size,
+        Scale::from(1.),
+        Transform::Normal,
+        Fourcc::Abgr8888,
+        std::iter::once(&elem),
+    )
+    .unwrap();
+    let white = pixels
+        .chunks_exact(4)
+        .filter(|b| b[0] >= 240 && b[1] >= 240 && b[2] >= 240)
+        .count();
+    let inked = pixels
+        .chunks_exact(4)
+        .filter(|b| b[0] != 0 || b[1] != 0 || b[2] != 0 || b[3] != 0)
+        .count();
+    // White glyphs, premultiplied, drawn alone on a transparent target come out as
+    // (α, α, α, α); count ink rather than pure white.
+    assert!(
+        inked >= 60,
+        "title texture draws nothing on its own (inked: {inked}, white: {white})"
+    );
+}
+
+/// Renders the window opening animation, with or without a custom shader.
 #[test]
 fn scene_window_open_draws_gles() {
     for custom in [None, Some(CUSTOM_OPEN_SHADER)] {

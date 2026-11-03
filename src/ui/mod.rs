@@ -5,3 +5,4 @@ pub mod minimized_strip;
 pub mod mru;
 pub mod screen_transition;
 pub mod screenshot_ui;
+pub mod title_texture;

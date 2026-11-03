@@ -1,11 +1,9 @@
 use std::cell::RefCell;
-use std::cmp::min;
 use std::collections::HashMap;
 use std::mem;
 use std::rc::Rc;
 use std::time::Duration;
 
-use anyhow::ensure;
 use niri_config::{
     Action, Bind, Color, Config, CornerRadius, GradientInterpolation, Key, Modifiers, MruDirection,
     MruFilter, MruScope, Trigger,
@@ -22,6 +20,7 @@ use smithay::input::keyboard::Keysym;
 use smithay::output::Output;
 use smithay::utils::{Logical, Point, Rectangle, Scale, Size, Transform};
 
+use super::title_texture::generate_title_texture;
 use crate::animation::{Animation, Clock};
 use crate::backend::tty_renderer::TtyOffscreen;
 use crate::layout::focus_ring::{FocusRing, FocusRingRenderElement};
@@ -1656,7 +1655,9 @@ impl TitleTexture {
         }
 
         self.texture
-            .get_or_insert_with(|| generate_title_texture(renderer, title, scale).ok())
+            .get_or_insert_with(|| {
+                generate_title_texture(renderer, FONT, (1., 1., 1.), None, title, scale).ok()
+            })
             .clone()
     }
 
@@ -1667,54 +1668,6 @@ impl TitleTexture {
             None
         }
     }
-}
-
-fn generate_title_texture<R: NiriRenderer>(
-    renderer: &mut R,
-    title: &str,
-    scale: f64,
-) -> anyhow::Result<MruTexture> {
-    let _span = tracy_client::span!("mru::generate_title_texture");
-
-    let mut font = FontDescription::from_string(FONT);
-    font.set_absolute_size(to_physical_precise_round(scale, font.size()));
-
-    let surface = ImageSurface::create(cairo::Format::ARgb32, 0, 0)?;
-    let cr = cairo::Context::new(&surface)?;
-    let layout = pangocairo::functions::create_layout(&cr);
-    layout.context().set_round_glyph_positions(false);
-    // On Window CSD, line breaks are either stripped or replaced with the linebreak symbol anyway.
-    // No use rendering it as multiple lines.
-    layout.set_single_paragraph_mode(true);
-    layout.set_font_description(Some(&font));
-    layout.set_text(title);
-
-    let (width, height) = layout.pixel_size();
-    ensure!(width > 0 && height > 0);
-
-    // Guard against overly long window titles.
-    let width = min(width, 16383);
-    let height = min(height, 16383);
-
-    let surface = ImageSurface::create(cairo::Format::ARgb32, width, height)?;
-    let cr = cairo::Context::new(&surface)?;
-    cr.set_source_rgb(1., 1., 1.);
-    pangocairo::functions::show_layout(&cr, &layout);
-
-    drop(cr);
-    let data = surface.take_data().unwrap();
-    let buffer = TextureBuffer::from_memory(
-        renderer,
-        &data,
-        Fourcc::Argb8888,
-        (width, height),
-        false,
-        scale,
-        Transform::Normal,
-        Vec::new(),
-    )?;
-
-    Ok(buffer.map_texture(R::wrap_texture))
 }
 
 impl ScopePanel {

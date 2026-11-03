@@ -455,7 +455,7 @@ impl MergeWith<WorkspaceShadowPart> for WorkspaceShadow {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TabIndicator {
     pub off: bool,
     pub hide_when_single_tab: bool,
@@ -472,6 +472,10 @@ pub struct TabIndicator {
     pub active_gradient: Option<Gradient>,
     pub inactive_gradient: Option<Gradient>,
     pub urgent_gradient: Option<Gradient>,
+    /// Window titles drawn inside the tab indicator.
+    ///
+    /// `None` (no `title` node in the config) disables them.
+    pub title: Option<TabIndicatorTitle>,
 }
 
 impl Default for TabIndicator {
@@ -494,6 +498,10 @@ impl Default for TabIndicator {
             active_gradient: None,
             inactive_gradient: None,
             urgent_gradient: None,
+            // Titles are enabled by default so that no fork-specific config node is needed to
+            // turn them on: they appear whenever the indicator geometry (position top/bottom,
+            // sufficient width) allows, keeping config files compatible with stock niri.
+            title: Some(TabIndicatorTitle::default()),
         }
     }
 }
@@ -523,10 +531,59 @@ impl MergeWith<TabIndicatorPart> for TabIndicator {
             (inactive_color, inactive_gradient),
             (urgent_color, urgent_gradient),
         );
+
+        if let Some(part) = &part.title {
+            // Merge into a copy of the current title config (or defaults when first enabled), so
+            // that unspecified fields keep their defaults.
+            let mut title = self.title.clone().unwrap_or_default();
+            title.merge_with(part);
+            self.title = Some(title);
+        }
     }
 }
 
-#[derive(knuffel::Decode, Debug, Default, Clone, Copy, PartialEq)]
+/// Window titles drawn inside the tab indicator.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TabIndicatorTitle {
+    /// Pango font description, e.g. `"sans 11px"`.
+    pub font: String,
+    pub active_color: Color,
+    pub inactive_color: Color,
+    /// Padding between the tab indicator edge and the title text.
+    pub padding: f64,
+}
+
+impl Default for TabIndicatorTitle {
+    fn default() -> Self {
+        Self {
+            font: "sans 11px".to_owned(),
+            active_color: Color::new_unpremul(1., 1., 1., 1.),
+            inactive_color: Color::new_unpremul(0.5, 0.5, 0.5, 1.),
+            padding: 2.,
+        }
+    }
+}
+
+impl MergeWith<TabIndicatorTitlePart> for TabIndicatorTitle {
+    fn merge_with(&mut self, part: &TabIndicatorTitlePart) {
+        merge_clone!((self, part), font, active_color, inactive_color);
+        merge!((self, part), padding);
+    }
+}
+
+#[derive(knuffel::Decode, Debug, Default, Clone, PartialEq)]
+pub struct TabIndicatorTitlePart {
+    #[knuffel(child, unwrap(argument))]
+    pub font: Option<String>,
+    #[knuffel(child)]
+    pub active_color: Option<Color>,
+    #[knuffel(child)]
+    pub inactive_color: Option<Color>,
+    #[knuffel(child, unwrap(argument))]
+    pub padding: Option<FloatOrInt<0, 65535>>,
+}
+
+#[derive(knuffel::Decode, Debug, Default, Clone, PartialEq)]
 pub struct TabIndicatorPart {
     #[knuffel(child)]
     pub off: bool,
@@ -560,6 +617,8 @@ pub struct TabIndicatorPart {
     pub inactive_gradient: Option<Gradient>,
     #[knuffel(child)]
     pub urgent_gradient: Option<Gradient>,
+    #[knuffel(child)]
+    pub title: Option<TabIndicatorTitlePart>,
 }
 
 #[derive(knuffel::Decode, Debug, Clone, Copy, PartialEq)]

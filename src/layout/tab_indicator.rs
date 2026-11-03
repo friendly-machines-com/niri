@@ -1,15 +1,22 @@
+use std::cell::RefCell;
 use std::iter::zip;
 use std::mem;
 
 use niri_config::{CornerRadius, Gradient, GradientRelativeTo, TabIndicatorPosition};
-use smithay::utils::{Logical, Point, Rectangle, Size};
+use smithay::backend::renderer::element::Kind;
+use smithay::utils::{Logical, Point, Rectangle, Size, Transform};
 
 use super::tile::Tile;
 use super::LayoutElement;
 use crate::animation::{Animation, Clock};
+use crate::backend::tty_renderer::TtyOffscreen;
 use crate::niri_render_elements;
 use crate::render_helpers::border::BorderRenderElement;
 use crate::render_helpers::renderer::NiriRenderer;
+use crate::render_helpers::texture::{
+    TextureBuffer, TextureRenderElement, UniversalTextureRenderElement,
+};
+use crate::ui::title_texture::{generate_title_texture, TitleTexture as TabTitleTexture};
 use crate::utils::{
     floor_logical_in_physical_max1, round_logical_in_physical, round_logical_in_physical_max1,
 };
@@ -20,6 +27,16 @@ pub struct TabIndicator {
     shaders: Vec<BorderRenderElement>,
     open_anim: Option<Animation>,
     config: niri_config::TabIndicator,
+    /// Sizes of the per-tab rects, parallel to `shaders`.
+    tab_sizes: Vec<Size<f64, Logical>>,
+    /// Per-tab titles, parallel to `shaders`.
+    titles: Vec<Option<String>>,
+    /// Per-tab active flags for the title color, parallel to `shaders`.
+    titles_active: Vec<bool>,
+    /// Cached title textures, parallel to `shaders`.
+    title_textures: RefCell<Vec<TitleTextureCache>>,
+    /// Scale of the last `update_render_elements()` call.
+    scale: f64,
 }
 
 #[derive(Debug)]
@@ -28,11 +45,25 @@ pub struct TabInfo {
     pub gradient: Gradient,
     /// Tab geometry in the same coordinate system as the area.
     pub geometry: Rectangle<f64, Logical>,
+    /// Title of the tab's window.
+    pub title: Option<String>,
+    /// Whether the tab's window is the active one.
+    pub is_active: bool,
+}
+
+/// Cached title texture for one tab.
+#[derive(Debug, Default)]
+struct TitleTextureCache {
+    key: (Option<String>, bool, i32, f64),
+    /// Cached generated texture, without the `TextureBuffer` wrapper: the buffer is
+    /// rebuilt fresh every frame so that the element gets a new Id and is redrawn.
+    texture: Option<Option<TtyOffscreen>>,
 }
 
 niri_render_elements! {
     TabIndicatorRenderElement => {
         Gradient = BorderRenderElement,
+        Texture = UniversalTextureRenderElement,
     }
 }
 
@@ -43,17 +74,29 @@ impl TabIndicator {
             shaders: Vec::new(),
             open_anim: None,
             config,
+            tab_sizes: Vec::new(),
+            titles: Vec::new(),
+            titles_active: Vec::new(),
+            title_textures: RefCell::new(Vec::new()),
+            scale: 1.,
         }
     }
 
     pub fn update_config(&mut self, config: niri_config::TabIndicator) {
         self.config = config;
+        self.title_textures.get_mut().clear();
     }
 
     pub fn update_shaders(&mut self) {
         for elem in &mut self.shaders {
             elem.damage_all();
         }
+    }
+
+    /// Called when some window title changed; drops title texture caches.
+    pub fn titles_changed(&mut self) {
+        self.update_shaders();
+        self.title_textures.get_mut().clear();
     }
 
     pub fn advance_animations(&mut self) {
@@ -168,9 +211,15 @@ impl TabIndicator {
         is_active: bool,
         scale: f64,
     ) {
+        self.scale = scale;
+
         if !enabled || self.config.off {
             self.shader_locs.clear();
             self.shaders.clear();
+            self.tab_sizes.clear();
+            self.titles.clear();
+            self.titles_active.clear();
+            self.title_textures.get_mut().clear();
             return;
         }
 
@@ -178,11 +227,19 @@ impl TabIndicator {
         if self.config.hide_when_single_tab && count == 1 {
             self.shader_locs.clear();
             self.shaders.clear();
+            self.tab_sizes.clear();
+            self.titles.clear();
+            self.titles_active.clear();
+            self.title_textures.get_mut().clear();
             return;
         }
 
         self.shaders.resize_with(count, Default::default);
         self.shader_locs.resize_with(count, Default::default);
+        self.tab_sizes.resize_with(count, Default::default);
+        self.titles.resize_with(count, Default::default);
+        self.titles_active.resize_with(count, Default::default);
+        self.title_textures.get_mut().resize_with(count, Default::default);
 
         let position = self.config.position;
         let radius = self.config.corner_radius as f32;
@@ -190,11 +247,16 @@ impl TabIndicator {
         let mut tabs_left = tab_count;
 
         let rects = self.tab_rects(area, count, scale);
-        for ((shader, loc), (tab, rect)) in zip(
-            zip(&mut self.shaders, &mut self.shader_locs),
-            zip(tabs, rects),
-        ) {
+        for (idx, (_tabs_left, (shader, (loc, (tab, rect))))) in zip(
+            (0..tab_count).rev(),
+            zip(&mut self.shaders,
+            zip(&mut self.shader_locs,
+            zip(tabs, rects))),
+        ).enumerate() {
             *loc = rect.loc;
+            self.tab_sizes[idx] = rect.size;
+            self.titles[idx] = tab.title;
+            self.titles_active[idx] = tab.is_active;
 
             let mut gradient_area = match tab.gradient.relative_to {
                 GradientRelativeTo::Window => tab.geometry,
@@ -301,9 +363,111 @@ impl TabIndicator {
             return;
         }
 
+        // Render text first so it sits on top of the tab background bar.
+        self.render_titles(renderer, pos, push);
+
         for (shader, loc) in zip(&self.shaders, &self.shader_locs) {
             let elem = shader.clone().with_location(pos + *loc);
             push(TabIndicatorRenderElement::from(elem));
+        }
+    }
+
+    fn render_titles(
+        &self,
+        renderer: &mut impl NiriRenderer,
+        pos: Point<f64, Logical>,
+        push: &mut dyn FnMut(TabIndicatorRenderElement),
+    ) {
+        let Some(title_config) = &self.config.title else {
+            return;
+        };
+
+        // Drawing titles into vertical indicators would need vertical text which we don't
+        // support for now.
+        if !matches!(
+            self.config.position,
+            TabIndicatorPosition::Top | TabIndicatorPosition::Bottom
+        ) {
+            return;
+        }
+
+        let scale = self.scale;
+        let padding = title_config.padding;
+
+        let mut caches = self.title_textures.borrow_mut();
+
+        for (idx, (title, active)) in zip(&self.titles, &self.titles_active).enumerate() {
+            let Some(title) = title else {
+                continue;
+            };
+            let Some(size) = self.tab_sizes.get(idx) else {
+                continue;
+            };
+            let Some(loc) = self.shader_locs.get(idx) else {
+                continue;
+            };
+
+            let avail_w = (size.w - 2. * padding).max(0.);
+            let max_w = (avail_w * scale).round() as i32;
+            if max_w <= 0 {
+                continue;
+            }
+
+            let color = if *active {
+                title_config.active_color
+            } else {
+                title_config.inactive_color
+            };
+
+            let cache = &mut caches[idx];
+            let key = (Some(title.clone()), *active, max_w, scale);
+            if cache.key != key {
+                cache.key = key;
+                cache.texture = None;
+            }
+
+            let texture = cache
+                .texture
+                .get_or_insert_with(|| {
+                    generate_title_texture(
+                        renderer,
+                        &title_config.font,
+                        (color.r as f64, color.g as f64, color.b as f64),
+                        Some(max_w),
+                        title,
+                        scale,
+                    )
+                    .ok()
+                    .map(|buf| buf.texture().clone())
+                })
+                .clone();
+
+            let Some(texture) = texture else {
+                continue;
+            };
+
+            // Wrap the cached texture in a fresh TextureBuffer every frame: a new Id
+            // means the damage tracker treats it as a new element and redraws it.
+            // The bar underneath damages its region on every frame (its shader
+            // element bumps its commit counter on each update), and a texture
+            // element with stale damage would never be drawn on top of it again.
+            let buffer =
+                TextureBuffer::from_texture(renderer, texture, scale, Transform::Normal, Vec::new());
+
+            let loc = pos + *loc;
+            let texture_size = buffer.logical_size();
+            let y = loc.y + (size.h - texture_size.h) / 2.;
+            let loc = Point::from((loc.x + padding, y));
+
+            let elem = UniversalTextureRenderElement(TextureRenderElement::from_texture_buffer(
+                buffer,
+                loc,
+                1.,
+                None,
+                None,
+                Kind::Unspecified,
+            ));
+            push(TabIndicatorRenderElement::Texture(elem));
         }
     }
 
@@ -340,8 +504,8 @@ impl TabIndicator {
         }
     }
 
-    pub fn config(&self) -> niri_config::TabIndicator {
-        self.config
+    pub fn config(&self) -> &niri_config::TabIndicator {
+        &self.config
     }
 }
 
@@ -407,6 +571,13 @@ impl TabInfo {
 
         let geometry = Rectangle::new(position, tile.animated_tile_size());
 
-        TabInfo { gradient, geometry }
+        let title = tile.window().title();
+
+        TabInfo {
+            gradient,
+            geometry,
+            title,
+            is_active,
+        }
     }
 }

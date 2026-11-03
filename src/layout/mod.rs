@@ -142,6 +142,13 @@ pub trait LayoutElement {
         let _ = blur_config;
     }
 
+    /// Title of the element, if any.
+    ///
+    /// Used for drawing window titles in the tab indicator.
+    fn title(&self) -> Option<String> {
+        None
+    }
+
     /// Visual size of the element.
     ///
     /// This is what the user would consider the size, i.e. excluding CSD shadows and whatnot.
@@ -3085,6 +3092,23 @@ impl<W: LayoutElement> Layout<W> {
         }
 
         false
+    }
+
+    pub fn tab_title_changed(&mut self, window: &W::Id) {
+        match &mut self.monitor_set {
+            MonitorSet::Normal { monitors, .. } => {
+                for mon in monitors {
+                    for ws in &mut mon.workspaces {
+                        ws.tab_title_changed(window);
+                    }
+                }
+            }
+            MonitorSet::NoOutputs { workspaces } => {
+                for ws in workspaces {
+                    ws.tab_title_changed(window);
+                }
+            }
+        }
     }
 
     pub fn update_render_elements(&mut self, output: Option<&Output>) {

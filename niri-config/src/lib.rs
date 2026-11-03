@@ -1444,6 +1444,7 @@ mod tests {
                     active_gradient: None,
                     inactive_gradient: None,
                     urgent_gradient: None,
+                    title: None,
                 },
                 insert_hint: InsertHint {
                     off: false,

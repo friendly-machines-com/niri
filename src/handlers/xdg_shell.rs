@@ -975,6 +975,19 @@ impl XdgShellHandler for State {
 
     fn title_changed(&mut self, toplevel: ToplevelSurface) {
         self.update_window_rules(&toplevel);
+
+        // Refresh the tab indicator title texture of the column containing this window.
+        let found = self
+            .niri
+            .layout
+            .find_window_and_output_mut(toplevel.wl_surface())
+            .map(|(mapped, output)| (mapped.window.clone(), output.cloned()));
+        if let Some((window, output)) = found {
+            self.niri.layout.tab_title_changed(&window);
+            if let Some(output) = output {
+                self.niri.queue_redraw(&output);
+            }
+        }
     }
 
     fn parent_changed(&mut self, toplevel: ToplevelSurface) {

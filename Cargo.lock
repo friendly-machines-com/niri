@@ -4258,7 +4258,6 @@ dependencies = [
  "libc",
  "log",
  "memoffset",
- "once_cell",
  "pkg-config",
 ]
 

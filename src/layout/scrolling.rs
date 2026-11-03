@@ -427,6 +427,14 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             || !self.closing_windows.is_empty()
     }
 
+    pub fn tab_title_changed(&mut self, window: &W::Id) {
+        for col in &mut self.columns {
+            if col.contains(window) {
+                col.tab_title_changed();
+            }
+        }
+    }
+
     pub fn update_render_elements(&mut self, is_active: bool, layer: RenderLayer) {
         let view_pos = Point::from((self.view_pos(), 0.));
         let view_size = self.view_size;
@@ -501,7 +509,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             .unwrap_or(self.options.layout.default_column_display);
         let will_tab = display_mode == ColumnDisplay::Tabbed;
         let extra_size = if will_tab {
-            TabIndicator::new(self.options.layout.tab_indicator).extra_size(1, self.scale)
+            TabIndicator::new(self.options.layout.tab_indicator.clone())
+                .extra_size(1, self.scale)
         } else {
             Size::from((0., 0.))
         };
@@ -527,7 +536,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             .unwrap_or(self.options.layout.default_column_display);
         let will_tab = display_mode == ColumnDisplay::Tabbed;
         let extra = if will_tab {
-            TabIndicator::new(self.options.layout.tab_indicator).extra_size(1, self.scale)
+            TabIndicator::new(self.options.layout.tab_indicator.clone())
+                .extra_size(1, self.scale)
         } else {
             Size::from((0., 0.))
         };
@@ -4048,7 +4058,7 @@ impl<W: LayoutElement> Column<W> {
             is_pending_maximized: false,
             is_pending_fullscreen: false,
             display_mode,
-            tab_indicator: TabIndicator::new(options.layout.tab_indicator),
+            tab_indicator: TabIndicator::new(options.layout.tab_indicator.clone()),
             move_x_animation: None,
             move_y_animation: None,
             view_size,
@@ -4136,7 +4146,7 @@ impl<W: LayoutElement> Column<W> {
         }
 
         self.tab_indicator
-            .update_config(options.layout.tab_indicator);
+            .update_config(options.layout.tab_indicator.clone());
         self.view_size = view_size;
         self.working_area = working_area;
         self.parent_area = parent_area;
@@ -4217,6 +4227,10 @@ impl<W: LayoutElement> Column<W> {
                 .any(|tile| tile.is_moving_between_workspaces())
     }
 
+    pub fn tab_title_changed(&mut self) {
+        self.tab_indicator.titles_changed();
+    }
+
     pub fn update_render_elements(&mut self, is_active: bool, view_rect: Rectangle<f64, Logical>) {
         let active_idx = self.active_tile_idx;
         for (tile_idx, (tile, tile_off)) in self.tiles_mut().enumerate() {
@@ -4227,7 +4241,7 @@ impl<W: LayoutElement> Column<W> {
             tile.update_render_elements(is_active, tile_view_rect);
         }
 
-        let config = self.tab_indicator.config();
+        let config = self.tab_indicator.config().clone();
         let offsets = self.tile_offsets_iter(self.data.iter().copied());
         let tabs = zip(&self.tiles, offsets)
             .enumerate()
