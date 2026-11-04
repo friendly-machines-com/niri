@@ -454,6 +454,26 @@ By default, the tab indicator has length equal to half of the window size, or `l
 `position` sets the position of the tab indicator relative to the window.
 It can be `left`, `right`, `top`, or `bottom`.
 
+`right-click-action` optionally runs one existing niri action when right-clicking a tab indicator (including its label).
+The clicked tab is activated **before** the action runs, so `close-window` closes that tab, even if it was inactive.
+Global actions retain their normal meaning; this does not make them window-specific.
+For example:
+
+```kdl
+layout {
+    tab-indicator {
+        right-click-action { close-window; }
+    }
+}
+```
+
+The action may have arguments, for example `right-click-action { spawn "my-script"; }`.
+Without this setting, right-click only activates the tab as before.
+Configured mouse bindings take priority; Mod+right-click resizing, overview gestures, and active pointer grabs are unaffected.
+This setting applies to the entire clickable tab, not just the text, and is available only in `layout`, not window rules.
+When merging configuration, omission preserves the earlier action and a new action replaces it.
+Use `right-click-action { noop; }` to restore activation-only behavior after an earlier setting.
+
 `gaps-between-tabs` controls the gap between individual tabs in logical pixels.
 
 `corner-radius` sets the rounded corner radius for tabs in the indicator in logical pixels.

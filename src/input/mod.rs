@@ -3010,6 +3010,39 @@ impl State {
                 }
             }
 
+            // Tab actions use the same activation region as ordinary tab clicks. Resolve it
+            // afresh so overlays and compositor UI cannot expose an obscured tab.
+            if button == Some(MouseButton::Right)
+                && !pointer.is_grabbed()
+                && !mod_down
+                && !is_overview_open
+            {
+                let action = self
+                    .niri
+                    .config
+                    .borrow()
+                    .layout
+                    .tab_indicator
+                    .right_click_action
+                    .clone();
+                if let Some(action) = action {
+                    let contents = self.niri.contents_under(pointer.current_location());
+                    if let Some((
+                        window,
+                        crate::layout::HitType::Activate {
+                            is_tab_indicator: true,
+                        },
+                    )) = contents.window
+                    {
+                        self.niri.suppressed_buttons.insert(button_code);
+                        self.niri.layout.activate_window(&window);
+                        self.niri.queue_redraw_all();
+                        self.do_action(action.0, false);
+                        return;
+                    }
+                }
+            }
+
             if let Some(mapped) = self.niri.window_under_cursor() {
                 let window = mapped.window.clone();
 

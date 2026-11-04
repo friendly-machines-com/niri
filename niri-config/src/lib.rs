@@ -650,6 +650,65 @@ mod tests {
     }
 
     #[test]
+    fn tab_right_click_action() {
+        assert!(do_parse("")
+            .layout
+            .tab_indicator
+            .right_click_action
+            .is_none());
+
+        let parsed =
+            do_parse(r#"layout { tab-indicator { right-click-action { close-window; }; }; }"#);
+        assert_eq!(
+            parsed.layout.tab_indicator.right_click_action.unwrap().0,
+            Action::CloseWindow
+        );
+
+        let parsed = do_parse(
+            r#"layout { tab-indicator { right-click-action { spawn "my-script" "arg"; }; }; }"#,
+        );
+        assert_eq!(
+            parsed.layout.tab_indicator.right_click_action.unwrap().0,
+            Action::Spawn(vec!["my-script".into(), "arg".into()])
+        );
+    }
+
+    #[test]
+    fn tab_right_click_action_merge() {
+        let mut indicator = TabIndicator::default();
+        let part = |text| {
+            knuffel::parse::<Vec<TabIndicatorPart>>("test.kdl", text)
+                .unwrap()
+                .remove(0)
+        };
+        indicator.merge_with(&part("tab-indicator { right-click-action { close-window; }; }"));
+        indicator.merge_with(&part("tab-indicator { width 24; }"));
+        assert_eq!(
+            indicator.right_click_action.as_ref().unwrap().0,
+            Action::CloseWindow
+        );
+        indicator.merge_with(&part("tab-indicator { right-click-action { noop; }; }"));
+        assert_eq!(indicator.right_click_action.unwrap().0, Action::Noop);
+    }
+
+    #[test]
+    fn invalid_tab_right_click_action() {
+        for action in [
+            "right-click-action",
+            "right-click-action {}",
+            "right-click-action { close-window; noop; }",
+            "right-click-action { not-an-action; }",
+            "right-click-action { close-window 1; }",
+            "right-click-action 1 { close-window; }",
+            "right-click-action unexpected=true { close-window; }",
+            "(unexpected)right-click-action { close-window; }",
+        ] {
+            let text = format!("layout {{ tab-indicator {{ {action}; }}; }}");
+            assert!(Config::parse_mem(&text).is_err(), "accepted {action}");
+        }
+    }
+
+    #[test]
     fn parse_on_xdg_activate() {
         let parsed = do_parse(
             r#"
@@ -1445,6 +1504,7 @@ mod tests {
                     inactive_gradient: None,
                     urgent_gradient: None,
                     title: None,
+                    right_click_action: None,
                 },
                 insert_hint: InsertHint {
                     off: false,

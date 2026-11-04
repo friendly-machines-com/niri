@@ -6,7 +6,7 @@ use miette::{miette, IntoDiagnostic as _};
 use smithay::backend::renderer::Color32F;
 
 use crate::utils::{Flag, MergeWith};
-use crate::FloatOrInt;
+use crate::{Action, FloatOrInt};
 
 pub const DEFAULT_BACKGROUND_COLOR: Color = Color::from_array_unpremul([0.25, 0.25, 0.25, 1.]);
 pub const DEFAULT_BACKDROP_COLOR: Color = Color::from_array_unpremul([0.15, 0.15, 0.15, 1.]);
@@ -476,6 +476,8 @@ pub struct TabIndicator {
     ///
     /// `None` (no `title` node in the config) disables them.
     pub title: Option<TabIndicatorTitle>,
+    /// Activate the clicked tab, then execute this action on right-click.
+    pub right_click_action: Option<TabIndicatorAction>,
 }
 
 impl Default for TabIndicator {
@@ -502,6 +504,7 @@ impl Default for TabIndicator {
             // turn them on: they appear whenever the indicator geometry (position top/bottom,
             // sufficient width) allows, keeping config files compatible with stock niri.
             title: Some(TabIndicatorTitle::default()),
+            right_click_action: None,
         }
     }
 }
@@ -524,6 +527,7 @@ impl MergeWith<TabIndicatorPart> for TabIndicator {
         );
 
         merge_clone!((self, part), length, position);
+        merge_clone_opt!((self, part), right_click_action);
 
         merge_color_gradient_opt!(
             (self, part),
@@ -619,6 +623,33 @@ pub struct TabIndicatorPart {
     pub urgent_gradient: Option<Gradient>,
     #[knuffel(child)]
     pub title: Option<TabIndicatorTitlePart>,
+    #[knuffel(child)]
+    pub right_click_action: Option<TabIndicatorAction>,
+}
+
+/// A configuration node containing exactly one ordinary niri action.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TabIndicatorAction(pub Action);
+
+impl<S: knuffel::traits::ErrorSpan> knuffel::Decode<S> for TabIndicatorAction {
+    fn decode_node(
+        node: &knuffel::ast::SpannedNode<S>,
+        ctx: &mut knuffel::decode::Context<S>,
+    ) -> Result<Self, DecodeError<S>> {
+        crate::utils::expect_only_children(node, ctx);
+        let mut children = node.children();
+        let child = children
+            .next()
+            .ok_or_else(|| DecodeError::missing(node, "expected one action"))?;
+        for extra in children {
+            ctx.emit_error(DecodeError::unexpected(
+                extra,
+                "node",
+                "only one action is allowed",
+            ));
+        }
+        Action::decode_node(child, ctx).map(Self)
+    }
 }
 
 #[derive(knuffel::Decode, Debug, Clone, Copy, PartialEq)]

@@ -23,6 +23,8 @@ Unlike regular columns, tabbed columns can go full-screen with multiple windows.
 
 Tabbed columns show a tab indicator on the side.
 You can click on the indicator to switch tabs.
+You can also configure `layout { tab-indicator { right-click-action { close-window; }; }; }`
+to activate and close the right-clicked tab, or replace `close-window` with another niri action.
 
 See the [`tab-indicator` section in the layout section](./Configuration:-Layout.md#tab-indicator) to configure it.
 
